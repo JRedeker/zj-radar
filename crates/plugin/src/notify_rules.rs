@@ -182,6 +182,24 @@ mod tests {
     }
 
     #[test]
+    fn a_degraded_identity_edge_never_notifies() {
+        // Bell-column invariance for the unknown token: idle → unknown (or a
+        // fresh pane surfacing unknown) renders the diamond but must stay
+        // silent, in every notify configuration the toggles allow.
+        let mut o = obs(Status::Unknown, "pinky", "main", "status unknown");
+        o.kind = crate::kind::Kind::Opencode;
+        let pairs = [(7, &o)];
+        let cur = current(&pairs);
+        for prev_status in [Status::Idle, Status::Running, Status::Done] {
+            let prev = BTreeMap::from([(7, prev_status)]);
+            assert!(
+                diff(&prev, &cur, None, &Config::default()).is_empty(),
+                "unknown edge from {prev_status:?} must not notify"
+            );
+        }
+    }
+
+    #[test]
     fn no_edge_when_status_unchanged() {
         let o = obs(Status::Done, "pinky", "main", "cargo build");
         let pairs = [(7, &o)];

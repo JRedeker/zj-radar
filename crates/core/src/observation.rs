@@ -121,6 +121,20 @@ impl TrackedObservation {
         self.status == Status::Running && !self.kind.is_steady()
     }
 
+    /// Whether this observation is a producer-owned wait the rail must never
+    /// resolve itself: an OpenCode producer's `Pending` (a question or
+    /// permission its own reply/reject event will resolve) or `Unknown`
+    /// (degraded identity, which only a fresh producer payload can replace).
+    /// Every clearing path — click, shell-prompt return, pane exit — must
+    /// treat this predicate as its no-op gate: a manual dismissal or a
+    /// producer-less clear would synthesize a state (Done, or a silent idle)
+    /// no producer ever reported, and ledger a completion that did not
+    /// happen. Every other kind keeps its acknowledgment and exit-clear
+    /// semantics unchanged.
+    pub fn producer_owned_sticky(&self) -> bool {
+        self.kind == Kind::Opencode && matches!(self.status, Status::Pending | Status::Unknown)
+    }
+
     /// Re-scrub the free-text fields with the same sanitizer and caps live
     /// intake applies at parse. Live observations are sanitized already; this
     /// is for observations loaded off disk, where a pre-sanitize build (or a

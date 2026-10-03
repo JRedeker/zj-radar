@@ -3152,7 +3152,6 @@ fn granted_rail_in_a_rail_only_tab_stays_selectable_after_the_prompt() {
     assert_eq!(selectable_effects(&granted), Vec::<bool>::new());
 }
 
-
 // ── D8: an OpenCode producer owns its Pending — a click never converts it ──
 
 #[test]
@@ -3166,16 +3165,8 @@ fn right_click_never_converts_an_opencode_pending_into_done() {
     let _ = rt.render(100, 80);
 
     let out = rt.mouse_right_click(3, 0);
-    assert!(
-        out.effects.is_empty(),
-        "producer-owned Pending refuses the click ack: {:?}",
-        out.effects
-    );
-    assert_eq!(
-        rt.radar.status(10).unwrap().status,
-        Status::Pending,
-        "still Pending: only the producer may resolve it"
-    );
+    assert!(out.effects.is_empty(), "producer-owned Pending refuses the click ack: {:?}", out.effects);
+    assert_eq!(rt.radar.status(10).unwrap().status, Status::Pending, "still Pending: only the producer may resolve it");
 }
 
 #[test]
@@ -3191,6 +3182,66 @@ fn an_opencode_unknown_row_is_never_acknowledgeable() {
     let out = rt.mouse_right_click(3, 0);
     assert!(out.effects.is_empty(), "Unknown is not Pending; nothing to ack: {:?}", out.effects);
     assert_eq!(rt.radar.status(10).unwrap().status, Status::Unknown);
+}
+
+#[test]
+fn shell_prompt_return_never_clears_a_producer_owned_opencode_row() {
+    // Contract v3, prompt-return path end to end: the pane's foreground goes
+    // back to zsh while the opencode producer's Pending (then Unknown) still
+    // stands. No producer resolution ever arrived, so the row keeps the
+    // producer's last truth — never a fabricated idle — and no ledger entry
+    // appears (a None hand-back is the only shape a recede can ride).
+    for status in [Status::Pending, Status::Unknown] {
+        let mut rt = granted_runtime();
+        rt.tabs_changed(vec![tab(0, "a", false)]);
+        let mut p = payload_for(10, status);
+        p.source = "opencode".into();
+        rt.status_pipe(&payload::to_wire(&p));
+
+        rt.command_changed(10, &["zsh".to_string()], false);
+
+        assert_eq!(rt.radar.status(10).unwrap().status, status, "{status:?} survives the prompt return");
+        assert!(rt.radar.ledger_is_empty(), "no synthetic completion may ledger");
+    }
+}
+
+#[test]
+fn pane_exit_never_clears_a_producer_owned_opencode_row() {
+    // Contract v3, exit path end to end: the pane manifest reports the root
+    // exited while an opencode Pending/Unknown stands. The relay re-states
+    // the pane as unknown; radar must not overwrite either with an idle, and
+    // must not ledger.
+    for status in [Status::Pending, Status::Unknown] {
+        let mut rt = granted_runtime();
+        rt.tabs_changed(vec![tab(0, "a", false)]);
+        let mut p = payload_for(10, status);
+        p.source = "opencode".into();
+        rt.status_pipe(&payload::to_wire(&p));
+
+        let mut update = manifest(HashMap::from([(0, vec![pane(10)])]));
+        update.exits = vec![(10, Some(0))];
+        rt.panes_changed(update);
+
+        assert_eq!(rt.radar.status(10).unwrap().status, status, "{status:?} survives the exit");
+        assert!(rt.radar.ledger_is_empty(), "no synthetic completion may ledger");
+    }
+}
+
+#[test]
+fn a_producer_resolution_still_clears_the_sticky_row_end_to_end() {
+    // The sanctioned clearing path: a matching producer payload (the reply
+    // landed) resolves the producer-owned Pending; the degraded Unknown is
+    // replaced by the next real payload. Admission stays kind-aware, not
+    // frozen.
+    let mut rt = granted_runtime();
+    rt.tabs_changed(vec![tab(0, "a", false)]);
+    let mut p = payload_for(10, Status::Pending);
+    p.source = "opencode".into();
+    rt.status_pipe(&payload::to_wire(&p));
+    let mut resolution = payload_for(10, Status::Running);
+    resolution.source = "opencode".into();
+    rt.status_pipe(&payload::to_wire(&resolution));
+    assert_eq!(rt.radar.status(10).unwrap().status, Status::Running);
 }
 
 #[test]

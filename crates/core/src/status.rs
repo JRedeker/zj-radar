@@ -350,6 +350,9 @@ mod tests {
         assert!(Status::Done.needs_attention());
         assert!(!Status::Running.needs_attention());
         assert!(!Status::Idle.needs_attention());
+        // Degraded identity is visible (the diamond) but never rings the
+        // bell: the unknown token must not enter the click-cycle set.
+        assert!(!Status::Unknown.needs_attention());
     }
 
     #[test]
@@ -371,5 +374,8 @@ mod tests {
         assert!(!Status::Done.needs_you());
         assert!(!Status::Running.needs_you());
         assert!(!Status::Idle.needs_you());
+        // A degraded-identity diamond never counts as "needs you" either —
+        // bell-column invariance for the unknown token.
+        assert!(!Status::Unknown.needs_you());
     }
 }

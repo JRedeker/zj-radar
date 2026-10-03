@@ -44,13 +44,13 @@
 
 use crate::config;
 use crate::control::Verb;
+use crate::kind::Kind;
 use crate::permission::{PermissionMarker, PermissionPolicy, PermissionProbe, PermissionState, Transition};
 use crate::presence::Presence;
 use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTab, SnapshotWrite, TabId};
 use crate::render::{self, RenderedRail};
 use crate::rollup::{LedgerLine, TabRow};
 use crate::sessions::{BadgeEntry, CommitTarget, Sessions};
-use crate::kind::Kind;
 use crate::status::Status;
 use crate::tab_namer::TabRename;
 use crate::theme;

@@ -57,6 +57,10 @@ pub struct StatusStore {
 impl StatusStore {
     /// Apply an incoming payload. Latest broadcast wins (the pipe delivers in
     /// order; no producer stamps a sequence, so there is nothing to reorder).
+    /// One admission gate sits ahead of that: while a producer-owned wait
+    /// (`Pending`/`Unknown` from the OpenCode producer) stands, a foreign
+    /// producer's payload is refused whole — `Replaced { prev: None,
+    /// recedes: false }`, the pane untouched.
     ///
     /// Hands back the pane's previous observation by move — so a caller that
     /// compares before/after (`RadarState::status_pipe`) needn't clone it
@@ -67,10 +71,21 @@ impl StatusStore {
     /// `completed_epoch_s`, so a completion's original wall-clock stamp
     /// survives repeated re-broadcasts of the same turn (spec §4.2/§4.3).
     pub fn apply(&mut self, p: StatusPayload, tick: u64, now_epoch_s: u64) -> Replaced {
-        // Any payload is proof the producer is alive — cancel a pending
-        // stale-Running grace clock before it can misfire.
-        self.suspect_running.remove(&p.pane_id);
         let prev = self.store.get(p.pane_id);
+        // A producer-owned wait admits only its own producer: while an
+        // OpenCode `Pending` (an answer the operator still owes) or `Unknown`
+        // (degraded identity) stands, a FOREIGN producer's payload — a
+        // `claude` Done on the same pane id, say — is refused whole: no
+        // overwrite, no completion stamp, no ledger recede edge. Only a
+        // matching (OpenCode) payload resolves the wait; the clear paths
+        // (`clear_on_prompt_return` / `clear_on_exit`) refuse for the same
+        // reason (see `TrackedObservation::producer_owned_sticky`).
+        if prev.as_ref().is_some_and(|s| s.producer_owned_sticky()) && Kind::from_source(&p.source) != Kind::Opencode {
+            return Replaced { prev: None, recedes: false };
+        }
+        // Any admitted payload is proof the producer is alive — cancel a
+        // pending stale-Running grace clock before it can misfire.
+        self.suspect_running.remove(&p.pane_id);
         let status_changed = prev.map(|s| s.status) != Some(p.status);
         let identical = !status_changed && prev.is_some_and(|s| s.msg == p.msg);
         let last_change_tick = if status_changed { tick } else { prev.map(|s| s.last_change_tick).unwrap_or(tick) };
@@ -164,12 +179,16 @@ impl StatusStore {
     /// agent exiting — but it *starts the grace clock*: if no payload or agent
     /// foreground vouches for the pane within `RUNNING_SUSPECT_GRACE_TICKS`,
     /// `expire_stale_running` clears it (the agent was killed mid-turn; no hook
-    /// fires on a kill). Keeps repo/branch so the tab keeps its name; drops the
-    /// message. Returns the observation this cleared (carrying its completion +
-    /// stamp, if any) — the ledger's recede edge for "the agent exited after
-    /// finishing." Unlike the (removed) focus-driven recede, this rides the
-    /// shared `CommandChanged` signal, so every tab's instance clears in
-    /// lockstep.
+    /// fires on a kill). A producer-owned wait (`TrackedObservation::
+    /// producer_owned_sticky` — an OpenCode `Pending` or `Unknown`) is never
+    /// cleared here either: only a matching producer payload resolves it, so a
+    /// prompt return must leave the diamond/waiting glyph alone rather than
+    /// fabricate an idle the producer never reported. Keeps repo/branch so the
+    /// tab keeps its name; drops the message. Returns the observation this
+    /// cleared (carrying its completion + stamp, if any) — the ledger's recede
+    /// edge for "the agent exited after finishing." Unlike the (removed)
+    /// focus-driven recede, this rides the shared `CommandChanged` signal, so
+    /// every tab's instance clears in lockstep.
     pub fn clear_on_prompt_return(&mut self, pane_id: u32, tick: u64) -> Option<TrackedObservation> {
         let prev = self.store.get(pane_id)?;
         if prev.status == Status::Running {
@@ -178,7 +197,7 @@ impl StatusStore {
             self.suspect_running.entry(pane_id).or_insert(tick);
             return None;
         }
-        if prev.status == Status::Idle {
+        if prev.status == Status::Idle || prev.producer_owned_sticky() {
             return None;
         }
         self.force_idle(pane_id, tick)
@@ -195,12 +214,18 @@ impl StatusStore {
     /// producer death — an agent-rooted pane (`zellij run -- claude`) never
     /// shows a shell prompt for `clear_on_prompt_return` to see, and no hook
     /// fires on a kill — so even a `Running` clears immediately, no grace
-    /// clock. Exits ride the level-triggered pane manifest; the Idle check
-    /// makes the repeat calls no-ops. Returns the displaced observation (the
-    /// ledger's recede edge), like the prompt-return clear.
+    /// clock. A producer-owned wait (`TrackedObservation::producer_owned_sticky`
+    /// — an OpenCode `Pending` or `Unknown`) is the one exception: its producer
+    /// resolves it or nothing does, so the pane keeps the producer's last truth
+    /// (the relay's stale detection re-states it as `unknown`) instead of an
+    /// idle the producer never sent. Exits ride the level-triggered pane
+    /// manifest; the Idle check makes the repeat calls no-ops. Returns the
+    /// displaced observation (the ledger's recede edge), like the prompt-return
+    /// clear.
     pub fn clear_on_exit(&mut self, pane_id: u32, tick: u64) -> Option<TrackedObservation> {
         self.suspect_running.remove(&pane_id);
-        if self.store.get(pane_id)?.status == Status::Idle {
+        let prev = self.store.get(pane_id)?;
+        if prev.status == Status::Idle || prev.producer_owned_sticky() {
             return None;
         }
         self.force_idle(pane_id, tick)
@@ -628,5 +653,114 @@ mod tests {
         assert_eq!(old.status, Status::Done);
         assert_eq!(old.completed_epoch_s, Some(100));
         assert!(s.clear_on_prompt_return(1, 6).is_none(), "already idle");
+    }
+
+    // ── contract v3: an OpenCode producer owns its Pending and Unknown ──
+
+    fn opencode_payload(pane_id: u32, status: Status) -> StatusPayload {
+        StatusPayload { source: "opencode".into(), ..payload(pane_id, status) }
+    }
+
+    #[test]
+    fn prompt_return_never_clears_a_producer_owned_pending_or_unknown() {
+        let mut s = StatusStore::default();
+        s.apply(opencode_payload(1, Status::Pending), 1, 0);
+        s.apply(opencode_payload(2, Status::Unknown), 1, 0);
+        // The pane's foreground returns to a shell (the producer is gone and
+        // will never send a resolution): the producer's last truth stands.
+        assert!(s.clear_on_prompt_return(1, 5).is_none(), "Pending is producer-owned");
+        assert!(s.clear_on_prompt_return(2, 5).is_none(), "Unknown is producer-owned");
+        assert_eq!(s.get(1).unwrap().status, Status::Pending);
+        assert_eq!(s.get(2).unwrap().status, Status::Unknown);
+        // None handed back = no ledger recede edge exists to take.
+    }
+
+    #[test]
+    fn exit_never_clears_a_producer_owned_pending_or_unknown() {
+        let mut s = StatusStore::default();
+        s.apply(opencode_payload(1, Status::Pending), 1, 0);
+        s.apply(opencode_payload(2, Status::Unknown), 1, 0);
+        // Definitive root death is still not a producer resolution: the relay
+        // re-states the pane as unknown; radar must not fabricate an idle.
+        assert!(s.clear_on_exit(1, 5).is_none(), "Pending survives the exit");
+        assert!(s.clear_on_exit(2, 5).is_none(), "Unknown survives the exit");
+        assert_eq!(s.get(1).unwrap().status, Status::Pending);
+        assert_eq!(s.get(2).unwrap().status, Status::Unknown);
+    }
+
+    #[test]
+    fn a_matching_producer_payload_still_resolves_the_sticky_statuses() {
+        let mut s = StatusStore::default();
+        s.apply(opencode_payload(1, Status::Pending), 1, 0);
+        s.apply(opencode_payload(1, Status::Running), 2, 0);
+        assert_eq!(s.get(1).unwrap().status, Status::Running, "producer resolution admitted");
+        s.apply(opencode_payload(1, Status::Unknown), 3, 0);
+        assert_eq!(s.get(1).unwrap().status, Status::Unknown, "degraded identity admitted");
+        s.apply(opencode_payload(1, Status::Idle), 4, 0);
+        assert_eq!(s.get(1).unwrap().status, Status::Idle, "producer idle admitted");
+    }
+
+    #[test]
+    fn other_producers_keep_their_prompt_and_exit_clears() {
+        // Every non-Opencode kind (here: the plain test producer, and the
+        // claude agent) keeps today's semantics: a prompt return or an exit
+        // clears the pushed status and hands back the recede edge.
+        for source in ["test", "claude"] {
+            let mut p = payload(1, Status::Pending);
+            p.source = source.into();
+            let mut s = StatusStore::default();
+            s.apply(p, 1, 0);
+            assert!(s.clear_on_prompt_return(1, 5).is_some(), "{source}: pending still clears");
+            let mut u = payload(2, Status::Unknown);
+            u.source = source.into();
+            s.apply(u, 2, 0);
+            assert!(s.clear_on_exit(2, 6).is_some(), "{source}: unknown still clears on exit");
+        }
+    }
+
+    #[test]
+    fn opencode_done_is_not_sticky_on_the_clear_paths() {
+        // Only Pending and Unknown are producer-owned: an OpenCode Done (a
+        // hand-crafted or future payload) still exit-clears like any
+        // completion.
+        let mut s = StatusStore::default();
+        s.apply(opencode_payload(1, Status::Done), 1, 100);
+        let cleared = s.clear_on_exit(1, 5).expect("Done still exit-clears");
+        assert_eq!(cleared.status, Status::Done);
+        assert_eq!(s.get(1).unwrap().status, Status::Idle);
+    }
+
+    #[test]
+    fn a_foreign_producer_payload_never_overrides_a_sticky_wait() {
+        // Intake, not just the clear paths: while the OpenCode producer's
+        // Pending/Unknown stands, a foreign producer's completion on the same
+        // pane id is refused at apply — no overwrite, no completion stamp,
+        // and no ledger recede edge riding the refusal.
+        for sticky in [Status::Pending, Status::Unknown] {
+            let mut s = StatusStore::default();
+            s.apply(opencode_payload(1, sticky), 1, 0);
+            for foreign_status in [Status::Done, Status::Error, Status::Running, Status::Idle] {
+                let replaced = s.apply(payload(1, foreign_status), 2, 50);
+                assert_eq!(s.get(1).unwrap().status, sticky, "{sticky:?} survives a foreign {foreign_status:?}");
+                assert!(replaced.prev.is_none(), "refusal hands back nothing");
+                assert!(!replaced.recedes, "refusal never recedes a completion");
+            }
+            // A matching producer payload is still admitted mid-wait.
+            s.apply(opencode_payload(1, Status::Running), 3, 60);
+            assert_eq!(s.get(1).unwrap().status, Status::Running);
+        }
+    }
+
+    #[test]
+    fn after_the_producer_resolves_a_foreign_payload_is_admitted_again() {
+        let mut s = StatusStore::default();
+        s.apply(opencode_payload(1, Status::Pending), 1, 0);
+        s.apply(payload(1, Status::Done), 2, 50);
+        assert_eq!(s.get(1).unwrap().status, Status::Pending, "refused while sticky");
+        s.apply(opencode_payload(1, Status::Idle), 3, 60);
+        let replaced = s.apply(payload(1, Status::Done), 4, 70);
+        assert_eq!(s.get(1).unwrap().status, Status::Done, "admitted once not sticky");
+        assert_eq!(replaced.prev.map(|p| p.status), Some(Status::Idle));
+        assert!(!replaced.recedes, "an Idle prev is not a completion recede");
     }
 }

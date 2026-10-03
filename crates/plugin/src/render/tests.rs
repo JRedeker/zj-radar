@@ -2043,6 +2043,63 @@ fn cards_waiting_distinguishable_from_error_by_shape_and_code() {
 }
 
 #[test]
+fn cards_render_degraded_identity_as_a_visible_diamond_never_idle() {
+    // Contract v3: the unknown token is admitted with its own glyph — a
+    // visible ◇ diamond in the status column at the Accent hue — never a
+    // silent fallback to the hollow idle circle, and never a completion,
+    // attention, or running glyph.
+    let unknown = PrimaryDetail { kind: Kind::Opencode, ..pd("pinky", "", "status unknown", Status::Unknown) };
+    let rows = vec![tab(1, "pinky", display(Status::Unknown, 0, 1, Some(unknown)))];
+    let s = render(&rows, &ro_cards(30, 100));
+    let line = s.lines().find(|l| l.contains("pinky")).expect("unknown row");
+    assert!(line.contains('◇'), "unknown row must render the ◇ diamond: {line:?}");
+    assert!(line.contains(Role::Accent.ansi()), "unknown row must use the accent hue: {line:?}");
+    let plain = strip_sgr(line);
+    for banned in ['○', '⠋', '●', '◆', '✗'] {
+        assert!(!plain.contains(banned), "unknown row must not render {banned}: {plain:?}");
+    }
+    // The degraded msg rides the pane's detail line: the rendered rail as a
+    // whole must carry it, and never a completion or attention story.
+    assert!(strip_sgr(&s).contains("status unknown"), "degraded msg must stay visible: {s:?}");
+}
+
+#[test]
+fn unknown_status_leaves_the_bell_column_unchanged() {
+    // Contract v3: the diamond owns the status column only. The bell column
+    // (the trailing ⚑ marker slot) must stay byte-identical to the same row
+    // in any other status: unknown never mints a bell, and a real unread
+    // bell keeps rendering beside the diamond — the executable form of
+    // "renders as a visible diamond in the status column with the bell
+    // column unchanged".
+    for has_bell in [false, true] {
+        let idle = TabRow { has_bell, ..tab(1, "pinky", display(Status::Idle, 0, 0, None)) };
+        let unknown = TabRow { has_bell, ..tab(1, "pinky", display(Status::Unknown, 0, 0, None)) };
+        let pending = TabRow { has_bell, ..tab(1, "pinky", display(Status::Pending, 0, 0, None)) };
+        let idle_line = strip_sgr(&render(&vec![idle], &ro(30, 100)));
+        let unknown_line = strip_sgr(&render(&vec![unknown], &ro(30, 100)));
+        let row = |rail: &str| rail.lines().find(|l| l.contains("pinky")).expect("row line").to_string();
+        let (idle_line, unknown_line) = (row(&idle_line), row(&unknown_line));
+        // Same row, same width: the only text difference from the idle row is
+        // the status glyph itself — the bell slot travels untouched.
+        assert_eq!(
+            unknown_line.replacen('◇', "·", 1),
+            idle_line.replacen('○', "·", 1),
+            "bell column must be byte-identical to the idle row (has_bell={has_bell})"
+        );
+        assert_eq!(unknown_line.contains('⚑'), has_bell, "unknown never mints or eats the bell");
+        assert!(unknown_line.contains('◇'), "the diamond stays visible either way");
+        // Teeth: a genuinely attention-worthy status renders a different
+        // status column on the same slot machinery, so the byte-identity
+        // above cannot pass vacuously.
+        assert_ne!(strip_sgr(&render(&vec![pending], &ro(30, 100))), unknown_line);
+        if has_bell {
+            assert!(idle_line.trim_end().ends_with('⚑'), "the bell marker is the trailing slot");
+            assert!(unknown_line.trim_end().ends_with('⚑'), "the diamond row keeps the trailing bell");
+        }
+    }
+}
+
+#[test]
 fn header_shows_radar_and_urgent_count() {
     // Header reads " RADAR" with tab count. The old fused `·N!` urgent
     // marker (design rule 7) stays gone — the needs-you badge is a
