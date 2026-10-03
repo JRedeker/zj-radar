@@ -2075,8 +2075,8 @@ fn unknown_status_leaves_the_bell_column_unchanged() {
         let idle = TabRow { has_bell, ..tab(1, "pinky", display(Status::Idle, 0, 0, None)) };
         let unknown = TabRow { has_bell, ..tab(1, "pinky", display(Status::Unknown, 0, 0, None)) };
         let pending = TabRow { has_bell, ..tab(1, "pinky", display(Status::Pending, 0, 0, None)) };
-        let idle_line = strip_sgr(&render(&vec![idle], &ro(30, 100)));
-        let unknown_line = strip_sgr(&render(&vec![unknown], &ro(30, 100)));
+        let idle_line = strip_sgr(&render(&[idle], &ro(30, 100)));
+        let unknown_line = strip_sgr(&render(&[unknown], &ro(30, 100)));
         let row = |rail: &str| rail.lines().find(|l| l.contains("pinky")).expect("row line").to_string();
         let (idle_line, unknown_line) = (row(&idle_line), row(&unknown_line));
         // Same row, same width: the only text difference from the idle row is
@@ -2091,7 +2091,7 @@ fn unknown_status_leaves_the_bell_column_unchanged() {
         // Teeth: a genuinely attention-worthy status renders a different
         // status column on the same slot machinery, so the byte-identity
         // above cannot pass vacuously.
-        assert_ne!(strip_sgr(&render(&vec![pending], &ro(30, 100))), unknown_line);
+        assert_ne!(strip_sgr(&render(&[pending], &ro(30, 100))), unknown_line);
         if has_bell {
             assert!(idle_line.trim_end().ends_with('⚑'), "the bell marker is the trailing slot");
             assert!(unknown_line.trim_end().ends_with('⚑'), "the diamond row keeps the trailing bell");
