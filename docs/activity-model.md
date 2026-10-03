@@ -66,7 +66,7 @@ behind the four readers.
 
 ## 3. The state × class presentation matrix
 
-`Status` (Idle < Done < Running < Pending < Error, severity-ordered) is
+`Status` (Idle < Unknown < Done < Running < Pending < Error, severity-ordered; `Unknown` marks a pane whose producer identity the relay cannot verify right now and is never a completion) is
 unchanged — it is the *wire and lifecycle* vocabulary and it is correct.
 Presentation is `f(Status, class)`:
 
@@ -80,6 +80,8 @@ signal (§4 layer 4) remains future work.
 | **Done** | `●` + ledger hand-off, TTL recede to Idle, notify | exit of a service — `●`/`✗` per exit code, notify: a dead dev server is news | `●` phrased "disconnected", notify (`notify_remote`, independent of `notify_done`); tab flashes; identity label stays so the user sees *which* connection dropped | labeled completion (`● $ nvim`) via preserved identity for held/run panes; recede as Job |
 | **Error** | `✗`, persists until re-run, notify | same | `✗` phrased "connection lost", notify (`notify_remote`) | same |
 | **Pending** | agent-origin only: `◆` waiting-for-you + wait-age tag | n/a | n/a | n/a |
+| **Unknown** | producer-owned identity degraded (stale/missing/invalid/reused): `◇` visible diamond, bell column unchanged; admits no click acknowledgment and no ledger entry |
+| **OpenCode Pending rule** | a `Kind::Opencode` `Pending` is producer-owned: only the matching producer resolution (relay status change) clears it; a manual click is refused — never a synthetic `Done`, never a ledger row (ADR 0017 D8) |
 | **Idle** | muted row if `ever_active` | muted row | muted row, `⇄` marker cleared (the marker tracks *connected*, not *was remote*) | muted identity label while the program is foreground (it also replaces a stale finished-command echo); nothing once it exits |
 
 **Background tasks** (the payload's `tasks`, today Claude only) render as

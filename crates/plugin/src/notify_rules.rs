@@ -52,6 +52,9 @@ fn phrase(status: Status, kind: Kind) -> Option<&'static str> {
         (Status::Error, _) => Some("error"),
         (Status::Pending, _) => Some("needs input"),
         (Status::Running | Status::Idle, _) => None,
+        // Degraded identity is evidence the relay lost the pane's story —
+        // worth a glyph, never a notification.
+        (Status::Unknown, _) => None,
     }
 }
 
@@ -69,6 +72,7 @@ fn enabled(status: Status, kind: Kind, cfg: &Config) -> bool {
             Status::Error => cfg.notify_error,
             Status::Pending => cfg.notify_pending,
             Status::Running | Status::Idle => false,
+            Status::Unknown => false,
         }
 }
 

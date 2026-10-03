@@ -50,6 +50,7 @@ use crate::radar_state::{Direction, PaneUpdate, RadarChange, RadarState, RadarTa
 use crate::render::{self, RenderedRail};
 use crate::rollup::{LedgerLine, TabRow};
 use crate::sessions::{BadgeEntry, CommitTarget, Sessions};
+use crate::kind::Kind;
 use crate::status::Status;
 use crate::tab_namer::TabRename;
 use crate::theme;
@@ -800,6 +801,13 @@ impl PluginRuntime {
     fn acknowledge_pending_payload(&self, pane_id: u32) -> Option<String> {
         let obs = self.radar.status_observation(pane_id)?;
         if obs.status != Status::Pending {
+            return None;
+        }
+        // D8: an OpenCode producer owns its Pending outright - only the
+        // matching producer resolution clears it. A click must never
+        // synthesize Done here (and therefore never ledger a completion
+        // that did not happen). Every other producer keeps its ack.
+        if obs.kind == Kind::Opencode {
             return None;
         }
         Some(crate::payload::to_wire(&crate::payload::StatusPayload {

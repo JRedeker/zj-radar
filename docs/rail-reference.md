@@ -43,7 +43,9 @@
 
 **Status glyphs (plain):** `○` idle · `⠋` working *(spins ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏; a running
 **server** or a connected **remote** session holds a steady `▸` instead —
-neither spins)* · `◆` needs-you · `●` done · `✗` error.
+neither spins)* · `◆` needs-you · `●` done · `✗` error · `◇` unknown
+*(a pane whose story the relay lost — stale, missing, invalid, or reused
+producer identity; visible, not alarming, never silently folded to idle)*.
 **Kind marks:** `✳` claude · `❉` codex · `✺` opencode · `✴` pi · `✦` gemini · `$` command · `⚙` build ·
 `⚗` test · `⇡` deploy · `❯` server · `⇄` remote · `⦿` other.
 

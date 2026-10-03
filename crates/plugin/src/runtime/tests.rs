@@ -3151,3 +3151,56 @@ fn granted_rail_in_a_rail_only_tab_stays_selectable_after_the_prompt() {
     let granted = runtime.permission_result(true);
     assert_eq!(selectable_effects(&granted), Vec::<bool>::new());
 }
+
+
+// ── D8: an OpenCode producer owns its Pending — a click never converts it ──
+
+#[test]
+fn right_click_never_converts_an_opencode_pending_into_done() {
+    let mut rt = granted_runtime();
+    rt.tabs_changed(vec![tab(0, "a", false)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10)]);
+    let mut p = payload_for(10, Status::Pending);
+    p.source = "opencode".into();
+    rt.status_pipe(&payload::to_wire(&p));
+    let _ = rt.render(100, 80);
+
+    let out = rt.mouse_right_click(3, 0);
+    assert!(
+        out.effects.is_empty(),
+        "producer-owned Pending refuses the click ack: {:?}",
+        out.effects
+    );
+    assert_eq!(
+        rt.radar.status(10).unwrap().status,
+        Status::Pending,
+        "still Pending: only the producer may resolve it"
+    );
+}
+
+#[test]
+fn an_opencode_unknown_row_is_never_acknowledgeable() {
+    let mut rt = granted_runtime();
+    rt.tabs_changed(vec![tab(0, "a", false)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10)]);
+    let mut p = payload_for(10, Status::Unknown);
+    p.source = "opencode".into();
+    rt.status_pipe(&payload::to_wire(&p));
+    let _ = rt.render(100, 80);
+
+    let out = rt.mouse_right_click(3, 0);
+    assert!(out.effects.is_empty(), "Unknown is not Pending; nothing to ack: {:?}", out.effects);
+    assert_eq!(rt.radar.status(10).unwrap().status, Status::Unknown);
+}
+
+#[test]
+fn every_other_producer_keeps_its_click_acknowledgment() {
+    let mut rt = granted_runtime();
+    rt.tabs_changed(vec![tab(0, "a", false)]);
+    rt.radar.set_tab_panes_for_position(0, vec![pane(10)]);
+    rt.status_pipe(&payload_json(10, "pending")); // fixture source is "claude"
+    let _ = rt.render(100, 80);
+
+    let out = rt.mouse_right_click(3, 0);
+    assert_eq!(out.effects.len(), 1, "non-OpenCode Pending still acknowledges");
+}

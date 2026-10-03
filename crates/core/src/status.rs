@@ -108,6 +108,7 @@ statuses! {
     fallback = Idle;
     //  variant    wire         role             plain  nerd
     Idle    => "idle",    Role::Muted,     '○', '\u{eb83}';
+    Unknown => "unknown", Role::Accent,   '◇', '\u{25C7}';
     Done    => "done",    Role::Success,   '●', '\u{f058}';
     Running => "running", Role::Working,   '⠋', '\u{f110}';
     Pending => "pending", Role::Attention, '◆', '\u{f0f3}';
@@ -210,6 +211,7 @@ mod tests {
     fn parses_known_and_unknown() {
         assert_eq!(Status::from_wire("running"), Status::Running);
         assert_eq!(Status::from_wire("done"), Status::Done);
+        assert_eq!(Status::from_wire("unknown"), Status::Unknown);
         assert_eq!(Status::from_wire("nonsense"), Status::Idle);
         assert_eq!(Status::from_wire(""), Status::Idle);
     }
@@ -218,6 +220,8 @@ mod tests {
     fn ord_ranks_idle_lowest_error_highest() {
         // `Status` derives `Ord` in ascending-severity declaration order; the
         // Tab Roll-Up relies on `max` picking the most-urgent member.
+        assert!(Status::Idle < Status::Unknown);
+        assert!(Status::Unknown < Status::Done);
         assert!(Status::Idle < Status::Done);
         assert!(Status::Done < Status::Running);
         assert!(Status::Running < Status::Pending);
@@ -244,6 +248,7 @@ mod tests {
         assert!(!Status::Idle.is_active());
         assert!(Status::Done.is_active());
         assert!(Status::Running.is_active());
+        assert!(Status::Unknown.is_active());
     }
 
     #[test]
@@ -251,7 +256,7 @@ mod tests {
         // `ALL` drives the exhaustiveness of the other table tests; pin its size
         // so a dropped table row is caught here instead of silently shrinking
         // coverage.
-        assert_eq!(Status::ALL.len(), 5);
+        assert_eq!(Status::ALL.len(), 6);
         assert_eq!(Status::ALL.first(), Some(&Status::Idle)); // ascending severity
         assert_eq!(Status::ALL.last(), Some(&Status::Error));
     }
@@ -300,6 +305,7 @@ mod tests {
         assert_eq!(Status::Pending.role(), Role::Attention); // waiting is the loud one
         assert_eq!(Status::Running.role(), Role::Working);
         assert_eq!(Status::Done.role(), Role::Success);
+        assert_eq!(Status::Unknown.role(), Role::Accent); // visible, not alarming
         assert_eq!(Status::Idle.role(), Role::Muted);
     }
 
@@ -309,6 +315,7 @@ mod tests {
         assert_eq!(Status::Idle.glyph_for(Plain), '○');
         assert_eq!(Status::Running.glyph_for(Plain), '⠋');
         assert_eq!(Status::Pending.glyph_for(Plain), '◆');
+        assert_eq!(Status::Unknown.glyph_for(Plain), '◇');
         assert_eq!(Status::Done.glyph_for(Plain), '●');
         assert_eq!(Status::Error.glyph_for(Plain), '✗');
     }
