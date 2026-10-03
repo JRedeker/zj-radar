@@ -1867,6 +1867,34 @@ fn pipe_flip_to_pending_flashes_for_two_ticks() {
 }
 
 #[test]
+fn a_refused_foreign_payload_is_a_full_no_op_edge() {
+    // The producer-owned OpenCode Unknown stands on pane 7; a foreign claude
+    // Pending arrives on the same pane. The sticky gate refuses it whole —
+    // and the refusal must be a FULL no-op: the pane keeps its wait, and no
+    // edge effect fires (no flash arm, no render, no snapshot write). When
+    // the refusal was shaped `Replaced { prev: None }`, status_pipe read it
+    // as a first observation and fabricated exactly that edge: the rejected
+    // payload flashed the tab and forced a render + persist while the visible
+    // state never changed.
+    let mut radar = RadarState::default();
+    radar.tabs_changed(vec![tab(10, 0, "work", true)]);
+    radar.set_tab_panes_for_position(0, vec![pane(7)]);
+    let opencode_unknown =
+        payload::to_wire(&StatusPayload { source: "opencode".into(), ..payload_in_repo(7, Status::Unknown, "repo") });
+    radar.status_pipe(&opencode_unknown, 1, 0, config::NamingMode::Off);
+    assert_eq!(radar.status(7).unwrap().status, Status::Unknown);
+
+    // The probe the review pinned: a rejected claude Pending over that
+    // Unknown — exactly the shape flips_to_pending treated as a fresh edge.
+    let foreign_pending = payload::to_wire(&payload_in_repo(7, Status::Pending, "repo"));
+    let refused = radar.status_pipe(&foreign_pending, 5, 0, config::NamingMode::Off).unwrap();
+    assert_eq!(refused, RadarChange::default(), "a refused payload reports no change at all");
+    assert_eq!(radar.status(7).unwrap().status, Status::Unknown, "the producer-owned wait stands");
+    assert!(!radar.rows(5)[0].flash, "a rejected Pending must not flash the tab");
+    assert!(!radar.rows(6)[0].flash, "…at any tick inside where its window would have run");
+}
+
+#[test]
 fn snapshot_load_never_flashes() {
     // A Pending observation that arrives via `load_snapshot` (a plugin instance
     // starting up onto pre-existing state) is not a live pipe edge — spec §8's

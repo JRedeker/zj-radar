@@ -8,7 +8,7 @@ use crate::observation::{ObservationOrigin, TrackedObservation};
 use crate::payload;
 use crate::rollup::{self, LedgerLine, TabDisplay, TabRow, TerminalPane};
 use crate::status::Status;
-use crate::status_store::StatusStore;
+use crate::status_store::{Applied, StatusStore};
 use crate::tab_namer::{PaneFacts, TabFacts, TabNamer, TabRename};
 use crate::theme;
 use serde::{Deserialize, Serialize};
@@ -745,7 +745,15 @@ impl RadarState {
         // the no-op/label-only classification below compares the whole
         // observation across the apply.
         let incoming = p.status;
-        let replaced = self.status.apply(p, tick, now_epoch_s);
+        let replaced = match self.status.apply(p, tick, now_epoch_s) {
+            // A payload the producer-owned-wait gate refused changed nothing:
+            // the pane keeps its wait, and the refusal must stay a full no-op
+            // — no flash arm, no render, no snapshot write. (A null-shaped
+            // `Replaced { prev: None }` read as a first observation here and
+            // fabricated exactly that edge for a rejected foreign payload.)
+            Applied::Refused => return Some(RadarChange::default()),
+            Applied::Admitted(replaced) => replaced,
+        };
         let prev = replaced.prev.as_ref();
         // Producers re-assert liberally (the Claude plugin broadcasts on every
         // tool hook, and Pre/PostToolUse derive the SAME activity string), so

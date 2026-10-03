@@ -42,6 +42,28 @@ impl Replaced {
     }
 }
 
+/// Outcome of one [`StatusStore::apply`]: the payload either passed every gate
+/// and updated the store, or was refused whole by the producer-owned-wait
+/// gate. The refusal is its own variant — NOT a null-shaped `Replaced` — so a
+/// caller can never read "refused" as "first observation for the pane" and
+/// fabricate a change edge (flash, render, snapshot) for a payload that never
+/// landed.
+pub enum Applied {
+    Admitted(Replaced),
+    Refused,
+}
+
+impl Applied {
+    /// The displaced observation, only when an admitted edge recedes it to
+    /// the ledger. A refused payload displaces nothing.
+    pub fn receded(self) -> Option<TrackedObservation> {
+        match self {
+            Applied::Admitted(r) => r.receded(),
+            Applied::Refused => None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct StatusStore {
     store: ObservationStore,
@@ -59,18 +81,19 @@ impl StatusStore {
     /// order; no producer stamps a sequence, so there is nothing to reorder).
     /// One admission gate sits ahead of that: while a producer-owned wait
     /// (`Pending`/`Unknown` from the OpenCode producer) stands, a foreign
-    /// producer's payload is refused whole — `Replaced { prev: None,
-    /// recedes: false }`, the pane untouched.
+    /// producer's payload is refused whole — [`Applied::Refused`], the pane
+    /// untouched.
     ///
-    /// Hands back the pane's previous observation by move — so a caller that
-    /// compares before/after (`RadarState::status_pipe`) needn't clone it
-    /// (tasks and all) ahead of the apply — and whether it recedes: true IFF
-    /// it was a completion (`Done`/`Error`) that a *real* edge just overwrote
-    /// — status or message actually changed. An identical `(status, msg)`
-    /// re-broadcast is a no-op edge: it never recedes and does not re-stamp
-    /// `completed_epoch_s`, so a completion's original wall-clock stamp
-    /// survives repeated re-broadcasts of the same turn (spec §4.2/§4.3).
-    pub fn apply(&mut self, p: StatusPayload, tick: u64, now_epoch_s: u64) -> Replaced {
+    /// On [`Applied::Admitted`] the pane's previous observation is handed back
+    /// by move — so a caller that compares before/after (`RadarState::
+    /// status_pipe`) needn't clone it (tasks and all) ahead of the apply — and
+    /// whether it recedes: true IFF it was a completion (`Done`/`Error`) that
+    /// a *real* edge just overwrote — status or message actually changed. An
+    /// identical `(status, msg)` re-broadcast is a no-op edge: it never
+    /// recedes and does not re-stamp `completed_epoch_s`, so a completion's
+    /// original wall-clock stamp survives repeated re-broadcasts of the same
+    /// turn (spec §4.2/§4.3).
+    pub fn apply(&mut self, p: StatusPayload, tick: u64, now_epoch_s: u64) -> Applied {
         let prev = self.store.get(p.pane_id);
         // A producer-owned wait admits only its own producer: while an
         // OpenCode `Pending` (an answer the operator still owes) or `Unknown`
@@ -81,7 +104,7 @@ impl StatusStore {
         // (`clear_on_prompt_return` / `clear_on_exit`) refuse for the same
         // reason (see `TrackedObservation::producer_owned_sticky`).
         if prev.as_ref().is_some_and(|s| s.producer_owned_sticky()) && Kind::from_source(&p.source) != Kind::Opencode {
-            return Replaced { prev: None, recedes: false };
+            return Applied::Refused;
         }
         // Any admitted payload is proof the producer is alive — cancel a
         // pending stale-Running grace clock before it can misfire.
@@ -143,7 +166,7 @@ impl StatusStore {
             },
         );
         self.evict_over_cap();
-        Replaced { prev, recedes: !identical && was_completion }
+        Applied::Admitted(Replaced { prev, recedes: !identical && was_completion })
     }
 
     /// Enforce [`MAX_TRACKED_PANES`] after an intake insert: while over the
@@ -740,10 +763,9 @@ mod tests {
             let mut s = StatusStore::default();
             s.apply(opencode_payload(1, sticky), 1, 0);
             for foreign_status in [Status::Done, Status::Error, Status::Running, Status::Idle] {
-                let replaced = s.apply(payload(1, foreign_status), 2, 50);
+                let applied = s.apply(payload(1, foreign_status), 2, 50);
                 assert_eq!(s.get(1).unwrap().status, sticky, "{sticky:?} survives a foreign {foreign_status:?}");
-                assert!(replaced.prev.is_none(), "refusal hands back nothing");
-                assert!(!replaced.recedes, "refusal never recedes a completion");
+                assert!(matches!(applied, Applied::Refused), "refusal is the explicit outcome, not a null prev");
             }
             // A matching producer payload is still admitted mid-wait.
             s.apply(opencode_payload(1, Status::Running), 3, 60);
@@ -758,8 +780,11 @@ mod tests {
         s.apply(payload(1, Status::Done), 2, 50);
         assert_eq!(s.get(1).unwrap().status, Status::Pending, "refused while sticky");
         s.apply(opencode_payload(1, Status::Idle), 3, 60);
-        let replaced = s.apply(payload(1, Status::Done), 4, 70);
+        let applied = s.apply(payload(1, Status::Done), 4, 70);
         assert_eq!(s.get(1).unwrap().status, Status::Done, "admitted once not sticky");
+        let Applied::Admitted(replaced) = applied else {
+            panic!("a non-sticky pane admits its payloads");
+        };
         assert_eq!(replaced.prev.map(|p| p.status), Some(Status::Idle));
         assert!(!replaced.recedes, "an Idle prev is not a completion recede");
     }
