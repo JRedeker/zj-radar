@@ -53,17 +53,6 @@ pub enum Applied {
     Refused,
 }
 
-impl Applied {
-    /// The displaced observation, only when an admitted edge recedes it to
-    /// the ledger. A refused payload displaces nothing.
-    pub fn receded(self) -> Option<TrackedObservation> {
-        match self {
-            Applied::Admitted(r) => r.receded(),
-            Applied::Refused => None,
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct StatusStore {
     store: ObservationStore,
@@ -367,6 +356,15 @@ mod tests {
         }
     }
 
+    /// The ledger hand-off of an apply result, for these tests' admitted-path
+    /// assertions (they never trigger the sticky refusal).
+    fn receded_of(applied: Applied) -> Option<TrackedObservation> {
+        match applied {
+            Applied::Admitted(r) => r.receded(),
+            Applied::Refused => None,
+        }
+    }
+
     fn payload_with_task(pane_id: u32, status: Status, task: &str) -> StatusPayload {
         StatusPayload { task: task.into(), ..payload(pane_id, status) }
     }
@@ -576,7 +574,7 @@ mod tests {
         let mut idle = payload(1, Status::Idle);
         idle.msg = String::new();
         // The overwrite differs in status → the old Done recedes out.
-        let receded = s.apply(idle, 2, 200).receded();
+        let receded = receded_of(s.apply(idle, 2, 200));
 
         assert_eq!(s.get(1).unwrap().status, Status::Idle);
         assert_eq!(s.get(1).unwrap().msg, "", "stale message is cleared");
@@ -621,17 +619,17 @@ mod tests {
         let mut s = StatusStore::default();
         s.apply(payload(1, Status::Done), 1, 100);
         assert!(
-            s.apply(payload(1, Status::Done), 2, 200).receded().is_none(),
+            receded_of(s.apply(payload(1, Status::Done), 2, 200)).is_none(),
             "identical (status,msg) is a no-op edge"
         );
         let mut new_msg = payload(1, Status::Done);
         new_msg.msg = "another turn".into();
-        let displaced = s.apply(new_msg, 3, 300).receded();
+        let displaced = receded_of(s.apply(new_msg, 3, 300));
         assert_eq!(displaced.unwrap().completed_epoch_s, Some(100), "old completion comes out");
         assert_eq!(s.get(1).unwrap().completed_epoch_s, Some(300), "new one stamped fresh");
         // A non-completion overwrite (Running) still displaces the old Done:
         s.apply(payload(2, Status::Done), 1, 100);
-        let displaced = s.apply(payload(2, Status::Running), 2, 200).receded();
+        let displaced = receded_of(s.apply(payload(2, Status::Running), 2, 200));
         assert_eq!(displaced.unwrap().status, Status::Done);
     }
 
